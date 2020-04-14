@@ -14,14 +14,16 @@ class EsSystemConf:
 
     default_parentpath = "/userdata/roms"
     default_command    = "python /usr/lib/python2.7/site-packages/configgen/emulatorlauncher.py %CONTROLLERSCONFIG% -system %SYSTEM% -rom %ROM%"
-    netplay_command    = "python /usr/lib/python2.7/site-packages/configgen/emulatorlauncher.py %CONTROLLERSCONFIG% %NETPLAY% -system %SYSTEM% -rom %ROM%"
 
     # Generate the es_systems.cfg file by searching the information in the es_system.yml file
     @staticmethod
-    def generate(rulesYaml, configFile, esSystemFile, romsdirsource, romsdirtarget):
-        rules = yaml.load(file(rulesYaml, "r"))
+    def generate(rulesYaml, featuresYaml, configFile, esSystemFile, esFeaturesFile, systemsConfigFile, archSystemsConfigFile, romsdirsource, romsdirtarget):
+        rules = yaml.safe_load(file(rulesYaml, "r"))
         config = EsSystemConf.loadConfig(configFile)
         es_system = ""
+
+        archSystemsConfig = yaml.safe_load(file(archSystemsConfigFile, "r"))
+        systemsConfig     = yaml.safe_load(file(systemsConfigFile, "r"))
 
         es_system += "<?xml version=\"1.0\"?>\n"
         es_system += "<systemList>\n"
@@ -30,12 +32,26 @@ class EsSystemConf:
 
         print "generating the " + esSystemFile + " file..."
         for system in sortedRules:
+            # compute default emulator/cores
+            defaultCore = None
+            defaultEmulator = None
+
+            if EsSystemConf.keys_exists(archSystemsConfig, system, "emulator"):
+                defaultEmulator = archSystemsConfig[system]["emulator"]
+            elif EsSystemConf.keys_exists(systemsConfig, system, "emulator"):
+                defaultEmulator = systemsConfig[system]["emulator"]
+            if EsSystemConf.keys_exists(archSystemsConfig, system, "core"):
+                defaultCore = archSystemsConfig[system]["core"]
+            elif EsSystemConf.keys_exists(systemsConfig, system, "core"):
+                defaultCore = systemsConfig[system]["core"]
+
             data = {}
             if rules[system]:
                 data = rules[system]
-            es_system += EsSystemConf.generateSystem(system, data, config)
+            es_system += EsSystemConf.generateSystem(system, data, config, defaultEmulator, defaultCore)
         es_system += "</systemList>\n"
         EsSystemConf.createEsSystem(es_system, esSystemFile)
+        EsSystemConf.createEsFeatures(featuresYaml, rules, esFeaturesFile)
 
         print "removing the " + romsdirtarget + " folder..."
         if os.path.isdir(romsdirtarget):
@@ -78,8 +94,8 @@ class EsSystemConf:
 
     # Generate emulator system
     @staticmethod
-    def generateSystem(system, data, config):
-        listEmulatorsTxt = EsSystemConf.listEmulators(data, config)
+    def generateSystem(system, data, config, defaultEmulator, defaultCore):
+        listEmulatorsTxt = EsSystemConf.listEmulators(data, config, defaultEmulator, defaultCore)
         if listEmulatorsTxt == "" and not("force" in data and data["force"] == True) :
           return ""
 
@@ -88,12 +104,6 @@ class EsSystemConf:
         listExtensions = EsSystemConf.listExtension(data, True)
         groupValue     = EsSystemConf.systemGroup(system, data)
         command        = EsSystemConf.default_command
-        if "emulators" in data:
-            if "libretro" in data["emulators"]:
-                for libretro_core in data["emulators"]["libretro"]:
-                    if "netplay" in data["emulators"]["libretro"][libretro_core] and \
-                        data["emulators"]["libretro"][libretro_core]["netplay"] == True :
-                            command = EsSystemConf.netplay_command
 
         systemTxt =  "  <system>\n"
         systemTxt += "        <fullname>%s</fullname>\n" % (data["name"])
@@ -202,6 +212,55 @@ class EsSystemConf:
         es_systems.write(essystem)
         es_systems.close()
 
+    # Write the information in the es_features.cfg file
+    @staticmethod
+    def createEsFeatures(featuresYaml, systems, esFeaturesFile):
+        features = yaml.safe_load(file(featuresYaml, "r"))
+        es_features = open(esFeaturesFile, "w")
+        featuresTxt = "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n"
+        featuresTxt += "<features>\n"
+        for emulator in features:
+            emulator_featuresTxt = "videomode" # on batocera, the videomode is supported for any board allowing to change resolution via configgen. It is not related to the emulator
+            if "features" in features[emulator]:
+                for feature in features[emulator]["features"]:
+                    if emulator_featuresTxt != "":
+                        emulator_featuresTxt += ", "
+                    emulator_featuresTxt += feature
+                featuresTxt += "  <emulator name=\"{}\" features=\"{}\"".format(emulator, emulator_featuresTxt)
+            else:
+                featuresTxt += "  <emulator name=\"{}\"".format(emulator)
+
+            if "cores" in features[emulator] or "systems" in features[emulator]:
+                featuresTxt += ">\n"
+                if "cores" in features[emulator]:
+                    featuresTxt += "    <cores>\n"
+                    for core in features[emulator]["cores"]:
+                        core_featuresTxt = ""
+                        if "features" in features[emulator]["cores"][core]:
+                            for feature in features[emulator]["cores"][core]["features"]:
+                                if core_featuresTxt != "":
+                                    core_featuresTxt += ", "
+                                core_featuresTxt += feature
+                        featuresTxt += "      <core name=\"{}\" features=\"{}\" />\n".format(core, core_featuresTxt)
+                    featuresTxt += "    </cores>\n"
+                if "systems" in features[emulator]:
+                    featuresTxt += "    <systems>\n"
+                    for system in features[emulator]["systems"]:
+                        system_featuresTxt = ""
+                        if "features" in features[emulator]["systems"][system]:
+                            for feature in features[emulator]["systems"][system]["features"]:
+                                if system_featuresTxt != "":
+                                    system_featuresTxt += ", "
+                                system_featuresTxt += feature
+                        featuresTxt += "      <system name=\"{}\" features=\"{}\" />\n".format(system, system_featuresTxt)
+                    featuresTxt += "    </systems>\n"
+                featuresTxt += "  </emulator>\n"
+            else:
+                featuresTxt += " />\n"
+        featuresTxt += "</features>\n"
+        es_features.write(featuresTxt)
+        es_features.close()
+
     # Returns the extensions supported by the emulator
     @staticmethod
     def listExtension(data, uppercase):
@@ -248,7 +307,7 @@ class EsSystemConf:
 
     # Returns the enabled cores in the .config file for the emulator
     @staticmethod
-    def listEmulators(data, config):
+    def listEmulators(data, config, defaultEmulator, defaultCore):
         listEmulatorsTxt = ""
         emulators = {}
         if "emulators" in data:
@@ -265,7 +324,10 @@ class EsSystemConf:
             coresTxt = ""
             for core in sorted(emulatorData):
                 if EsSystemConf.isValidRequirements(config, emulatorData[core]["requireAnyOf"]):
-                    coresTxt += "                    <core>%s</core>\n" % (core)
+                    if emulator == defaultEmulator and core == defaultCore:
+                        coresTxt += "                    <core default=\"true\">%s</core>\n" % (core)
+                    else:
+                        coresTxt += "                    <core>%s</core>\n" % (core)
 
             if coresTxt == "":
                 emulatorTxt = ""
@@ -284,12 +346,34 @@ class EsSystemConf:
 
         return listEmulatorsTxt
 
+    @staticmethod
+    def keys_exists(element, *keys):
+        '''
+        Check if *keys (nested) exists in `element` (dict).
+        '''
+        if not isinstance(element, dict):
+            raise AttributeError('keys_exists() expects dict as first argument.')
+        if len(keys) == 0:
+            raise AttributeError('keys_exists() expects at least two arguments, one given.')
+
+        _element = element
+        for key in keys:
+            try:
+                _element = _element[key]
+            except KeyError:
+                return False
+        return True
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("yml",        help="es_systems.yml definition file")
-    parser.add_argument("config",     help=".config buildroot file")
-    parser.add_argument("es_systems", help="es_systems.cfg emulationstation file")
-    parser.add_argument("romsdirsource",    help="emulationstation roms directory")
-    parser.add_argument("romsdirtarget",    help="emulationstation roms directory")
+    parser.add_argument("yml",           help="es_systems.yml definition file")
+    parser.add_argument("features",      help="es_features.yml file")
+    parser.add_argument("config",        help=".config buildroot file")
+    parser.add_argument("es_systems",    help="es_systems.cfg emulationstation file")
+    parser.add_argument("es_features",   help="es_features.cfg emulationstation file")
+    parser.add_argument("gen_defaults_global", help="global configgen defaults")
+    parser.add_argument("gen_defaults_arch",   help="defaults configgen defaults")
+    parser.add_argument("romsdirsource", help="emulationstation roms directory")
+    parser.add_argument("romsdirtarget", help="emulationstation roms directory")
     args = parser.parse_args()
-    EsSystemConf.generate(args.yml, args.config, args.es_systems, args.romsdirsource, args.romsdirtarget)
+    EsSystemConf.generate(args.yml, args.features, args.config, args.es_systems, args.es_features, args.gen_defaults_global, args.gen_defaults_arch, args.romsdirsource, args.romsdirtarget)
